@@ -33,10 +33,22 @@ export LLVM_VERSION=17.0.4
 ```
 cd ${DREDD_EXPERIMENTS_ROOT}
 git clone --recursive https://github.com/mc-imperial/dredd.git
-pushd dredd
-    OS=ubuntu-22.04 DREDD_LLVM_SUFFIX=-stock-clang .github/workflows/install_clang.sh
+pushd dredd/third_party/clang+llvm
+    OS=ubuntu-22.04
+    DREDD_LLVM_TAG=17.0.6
+    curl -Lo clang+llvm.tar.xz "https://github.com/llvm/llvm-project/releases/download/llvmorg-${DREDD_LLVM_TAG}/clang+llvm-${DREDD_LLVM_TAG}-x86_64-linux-gnu-${OS}.tar.xz"
+    tar xf clang+llvm.tar.xz
+    mv clang+llvm-${DREDD_LLVM_TAG}-x86_64-linux-gnu-${OS}/* .
+    rm clang+llvm.tar.xz
 popd
-cmake -S dredd -B dredd/build -G Ninja -DCMAKE_C_COMPILER=clang-15 -DCMAKE_CXX_COMPILER=clang++-15
+
+# (Optional) For reproducibility, checkout the dredd version used below
+pushd dredd
+git checkout 2074c34a701211777554e4d2d6acdbb8fc1166f2
+popd
+
+DREDD_COMPILER_PATH=${DREDD_EXPERIMENTS_ROOT}/dredd/third_party/clang+llvm/bin
+cmake -S dredd -B dredd/build -G Ninja -DCMAKE_C_COMPILER=${DREDD_COMPILER_PATH}/clang -DCMAKE_CXX_COMPILER=${DREDD_COMPILER_PATH}/clang++
 cmake --build dredd/build --target dredd
 cp dredd/build/src/dredd/dredd dredd/third_party/clang+llvm/bin/
 ```
@@ -70,9 +82,9 @@ do
   SOURCE_DIR=llvm-${LLVM_VERSION}-${kind}/llvm
   BUILD_DIR=llvm-${LLVM_VERSION}-${kind}-build
   mkdir ${BUILD_DIR}
-  cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_FLAGS="-w" -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang" -DCMAKE_C_COMPILER=clang-15 -DCMAKE_CXX_COMPILER=clang++-15
+  cmake -S "${SOURCE_DIR}" -B "${BUILD_DIR}" -G Ninja -DCMAKE_EXPORT_COMPILE_COMMANDS=ON -DCMAKE_CXX_FLAGS="-w" -DCMAKE_BUILD_TYPE=Release -DLLVM_ENABLE_PROJECTS="clang" -DCMAKE_C_COMPILER=${DREDD_COMPILER_PATH}/clang -DCMAKE_CXX_COMPILER=${DREDD_COMPILER_PATH}/clang++
   # Build something minimal to ensure all auto-generated pieces of code are created.
-  cmake --build "${BUILD_DIR}" --target LLVMCore
+  cmake --build "${BUILD_DIR}" --target all
 done
 ```
 
@@ -85,6 +97,9 @@ export DREDD_EXECUTABLE=${DREDD_EXPERIMENTS_ROOT}/dredd/third_party/clang+llvm/b
 Mutate all `.cpp` files under `InstCombine` in the copy of LLVM designated for mutation:
 
 ```
+# (Optional) `sort` depend on locale, for reproducibility:
+export LC_ALL=C
+
 cd ${DREDD_EXPERIMENTS_ROOT}
 FILES_TO_MUTATE=($(ls llvm-${LLVM_VERSION}-mutated/llvm/lib/Transforms/InstCombine/*.cpp | sort))
 echo ${FILES[*]}
@@ -94,6 +109,9 @@ ${DREDD_EXECUTABLE} -p llvm-${LLVM_VERSION}-mutated-build/compile_commands.json 
 Apply mutation tracking to all `.cpp` files under `InstCombine` in the copy of LLVM designated for mutation tracking:
 
 ```
+# (Optional) `sort` depend on locale, for reproducibility:
+export LC_ALL=C
+
 cd ${DREDD_EXPERIMENTS_ROOT}
 FILES_TO_MUTATE=($(ls llvm-${LLVM_VERSION}-mutant-tracking/llvm/lib/Transforms/InstCombine/*.cpp | sort))
 echo ${FILES[*]}
@@ -203,6 +221,11 @@ cmake -S csmith -B csmith/build -G Ninja
 cmake --build csmith/build
 ```
 
+`csmith-runner` and `reduce-new-kills` both use `clang-15`'s sanitiser, which might not work on newer Linux distros. A workaround for this issue is to reduce ASLR entropy:
+```
+sudo sysctl vm.mmap_rnd_bits=28
+```
+
 ```
 csmith-runner llvm-mutated.json llvm-mutant-tracking.json llvm-${LLVM_VERSION}-mutated-build/bin/clang llvm-${LLVM_VERSION}-mutant-tracking-build/bin/clang ${DREDD_EXPERIMENTS_ROOT}/csmith
 ```
@@ -219,6 +242,31 @@ To kill them:
 pkill -9 -f csmith-runner
 ```
 
+# (or alternatively) YARPGen runner
+
+Get and build YARPGen:
+```
+git clone https://github.com/intel/yarpgen.git
+pushd yarpgen
+# (Optional) for reproducibility
+git checkout 700f5a2f564aab697ef8ff1b26afd50c3e729ecb
+
+mkdir build
+cd build
+cmake ..
+make -j$(proc)
+popd
+```
+
+```
+yarpgen-runner llvm-mutated.json llvm-mutant-tracking.json llvm-${LLVM_VERSION}-mutated-build/bin/clang llvm-${LLVM_VERSION}-mutant-tracking-build/bin/clang ${DREDD_EXPERIMENTS_ROOT}/yarpgen
+```
+
+To run many instances in parallel (16):
+
+```
+for i in `seq 1 16`; do yarpgen-runner llvm-mutated.json llvm-mutant-tracking.json llvm-${LLVM_VERSION}-mutated-build/bin/clang llvm-${LLVM_VERSION}-mutant-tracking-build/bin/clang ${DREDD_EXPERIMENTS_ROOT}/yarpgen & done
+```
 
 # Results analysis
 
@@ -230,8 +278,47 @@ analyse-results work
 ```
 
 # Reductions
+Install `creduce` and `gcc-12`:
+```
+sudo apt install creduce gcc-12
+```
 
 ```
 cd ${DREDD_EXPERIMENTS_ROOT}
 reduce-new-kills work ${DREDD_EXPERIMENTS_ROOT}/llvm-${LLVM_VERSION}-mutated-build/bin/clang ${DREDD_EXPERIMENTS_ROOT}/csmith
+```
+
+To run many instances in parallel (16):
+
+```
+for i in `seq 1 16`; do reduce-new-kills work ${DREDD_EXPERIMENTS_ROOT}/llvm-${LLVM_VERSION}-mutated-build/bin/clang ${DREDD_EXPERIMENTS_ROOT}/csmith & done
+```
+
+# Package grown testsuite
+The following runner verifies that the reduced program is compilable with Clang/GCC under both `-O3` and `-O0` optimization levels. In the case of a miscompilation test case, it checks that the execution output of the binary, compiled by each compiler and optimization mode, produces the same result.
+
+```
+package-tests work ${DREDD_EXPERIMENTS_ROOT}/csmith
+```
+
+To run many instances in parallel (16):
+
+```
+for i in `seq 1 16`; do package-tests work ${DREDD_EXPERIMENTS_ROOT}/csmith & done
+```
+
+# Historical check
+
+Make sure the following packages are installed:
+```
+sudo apt install gcc-multilib libncurses5
+```
+
+You might need to remove testcases that failed to be packaged in `package-tests`:
+```
+find work/testsuite/ -empty -type d -delete
+```
+
+```
+historical-check work ${LLVM_VERSION} ${DREDD_EXPERIMENTS_ROOT}/csmith/
 ```

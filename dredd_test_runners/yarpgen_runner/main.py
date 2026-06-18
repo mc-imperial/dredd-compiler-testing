@@ -6,6 +6,7 @@ import os
 import random
 import tempfile
 import time
+import datetime
 
 from dredd_test_runners.common.constants import DEFAULT_COMPILATION_TIMEOUT, DEFAULT_RUNTIME_TIMEOUT
 from dredd_test_runners.common.hash_file import hash_file
@@ -265,6 +266,9 @@ def main():
             shutil.copy(src=yarpgen_out_dir / "func.c", dst=test_output_directory / "func.c")
             shutil.copy(src=yarpgen_out_dir / "init.h", dst=test_output_directory / "init.h")
 
+            # Record time at which consideration of this test started
+            analysis_timestamp_start: datetime.datetime = datetime.datetime.now()
+
             # Load file contents into a list. We go from list to set to list to eliminate duplicates.
             covered_by_this_test: List[int] = list(set([int(line.strip()) for line in
                                                         open(dredd_covered_mutants_path, 'r').readlines()]))
@@ -316,7 +320,9 @@ def main():
                     print("Writing kill info to file.")
                     with open(mutant_path / "kill_info.json", "w") as outfile:
                         json.dump({"killing_test": yarpgen_test_name,
-                                   "kill_type": str(mutant_result)}, outfile)
+                                   "kill_type": str(mutant_result),
+                                   "kill_timestamp": str(datetime.datetime.now()),
+                                    }, outfile)
                 except FileExistsError:
                     print(f"Mutant {mutant} was independently discovered to be killed.")
                     continue
@@ -341,12 +347,19 @@ def main():
             killed_by_this_test.sort()
             covered_but_not_killed_by_this_test.sort()
             already_killed_by_other_tests.sort()
+
+            # Record time at which consideration of this test ended
+            analysis_timestamp_end: datetime.datetime = datetime.datetime.now()
+
             with open(test_output_directory / "kill_summary.json", "w") as outfile:
                 json.dump({"terminated_early": terminated_early,
-                           "covered_mutants": covered_by_this_test,
+                           "covered_mutants_count": len(covered_by_this_test),
                            "killed_mutants": killed_by_this_test,
-                           "skipped_mutants": already_killed_by_other_tests,
-                           "survived_mutants": covered_but_not_killed_by_this_test}, outfile)
+                           "skipped_mutants_count": len(already_killed_by_other_tests),
+                           "survived_mutants_count": len(covered_but_not_killed_by_this_test),
+                           "analysis_start_time": str(analysis_timestamp_start),
+                           "analysis_end_time": str(analysis_timestamp_end),
+                           }, outfile)
 
 
 if __name__ == '__main__':

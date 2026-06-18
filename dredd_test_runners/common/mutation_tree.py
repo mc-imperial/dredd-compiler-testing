@@ -35,7 +35,7 @@ class MutationTree:
                 children.append(child_node_id)
                 self.parent_map[child_node_id] = node_id
                 self.num_nodes += 1
-                populate(child_json_node, child_node_id)
+                # populate(child_json_node, child_node_id)
             self.nodes[node_id] = MutationTreeNode(get_mutation_ids_for_json_node(json_node), children)
             temp: int = functools.reduce(max, self.nodes[node_id].mutation_ids, 0)
             self.num_mutations = max(self.num_mutations, temp)
@@ -48,10 +48,11 @@ class MutationTree:
         self.num_mutations = 0
         self.num_nodes = 0
 
-        for root_json_node in [file["mutationTreeRoot"] for file in json_data["infoForFiles"]]:
-            root_node_id = self.num_nodes
-            self.num_nodes += 1
-            populate(root_json_node, root_node_id)
+        for file_info in json_data["infoForFiles"]:
+            for mutation_tree_node in file_info["mutationTree"]: 
+                root_node_id = self.num_nodes
+                self.num_nodes += 1
+                populate(mutation_tree_node, root_node_id)
 
     def get_mutation_ids_for_subtree(self, node_id) -> List[int]:
         assert 0 <= node_id < self.num_nodes

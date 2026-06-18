@@ -3,6 +3,7 @@ import json
 import os
 import time
 import tempfile
+import datetime
 
 from pathlib import Path
 from dredd_test_runners.common.hash_file import hash_file
@@ -78,6 +79,9 @@ def main():
             if not test_filename.startswith(regression_prefix) and not test_filename.startswith(unit_tests_prefix):
                 print("Skipping test " + test_filename + " as it is not in a relevant directory")
                 continue
+
+            # Record time at which consideration of this test started
+            analysis_timestamp_start: datetime.datetime = datetime.datetime.now()
 
             # We attempt to create a directory that has the same name as this test file, except that we strip off the
             # LLVM test suite prefix, and change '/' to '_'.
@@ -207,7 +211,9 @@ def main():
                     print("Writing kill info to file.")
                     with open(mutant_path / "kill_info.json", "w") as outfile:
                         json.dump({"killing_test": test_filename_without_llvm_test_suite_prefix,
-                                   "kill_type": str(mutant_result)}, outfile)
+                                   "kill_type": str(mutant_result),
+                                   "kill_timestamp": str(datetime.datetime.now())
+                                   }, outfile)
                 except FileExistsError:
                     print(f"Mutant {mutant} was independently discovered to be killed.")
                     continue
@@ -222,12 +228,19 @@ def main():
             killed_by_this_test.sort()
             covered_but_not_killed_by_this_test.sort()
             already_killed_by_other_tests.sort()
+
+            # Record time at which consideration of this test ended
+            analysis_timestamp_end: datetime.datetime = datetime.datetime.now()
+
             with open(test_output_directory / "kill_summary.json", "w") as outfile:
                 json.dump({"test": test_filename_without_llvm_test_suite_prefix,
-                           "covered_mutants": covered_by_this_test,
+                           "covered_mutants_count": len(covered_by_this_test),
                            "killed_mutants": killed_by_this_test,
-                           "skipped_mutants": already_killed_by_other_tests,
-                           "survived_mutants": covered_but_not_killed_by_this_test}, outfile)
+                           "skipped_mutants_count": len(already_killed_by_other_tests),
+                           "survived_mutants_count": len(covered_but_not_killed_by_this_test),
+                           "analysis_start_time": str(analysis_timestamp_start),
+                           "analysis_end_time": str(analysis_timestamp_end),
+                           }, outfile)
 
 
 if __name__ == '__main__':

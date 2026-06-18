@@ -44,7 +44,7 @@ def main():
             elif kill_type == 'KillStatus.KILL_DIFFERENT_EXIT_CODES':
                 print(mutant_summary)
             elif kill_type == 'KillStatus.KILL_COMPILER_CRASH':
-                pass
+                print(mutant_summary)
             elif kill_type == 'KillStatus.KILL_COMPILER_TIMEOUT':
                 pass
             else:
