@@ -78,6 +78,12 @@ def main():
                         help="Cease testing if a kill has not occurred for this length of time. Default is 24 hours. "
                              "To test indefinitely, pass 0.",
                         type=int)
+    parser.add_argument("--use-sanitizers",
+                        action="store_true",
+                        help="If set, additionally compile and run each Csmith-generated program with "
+                             "ASan/UBSan and MSan, discarding the program if a sanitizer reports an error. "
+                             "This guards against Csmith occasionally emitting programs with undefined "
+                             "behaviour, at the cost of extra compile/run time per generated program.")
     args = parser.parse_args()
 
     assert args.mutation_info_file != args.mutation_info_file_for_mutant_coverage_tracking
@@ -131,10 +137,11 @@ def main():
                 os.remove(generated_program_exe_compiled_with_no_mutants)
             if generated_program_exe_compiled_with_mutant_tracking.exists():
                 os.remove(generated_program_exe_compiled_with_mutant_tracking)
-            if asan_ubsan_compiled_exe.exists():
-                os.remove(asan_ubsan_compiled_exe)
-            if msan_compiled_exe.exists():
-                os.remove(msan_compiled_exe)
+            if args.use_sanitizers:
+                if asan_ubsan_compiled_exe.exists():
+                    os.remove(asan_ubsan_compiled_exe)
+                if msan_compiled_exe.exists():
+                    os.remove(msan_compiled_exe)
 
             # Generate a Csmith program
             csmith_seed = random.randint(0, 2 ** 32 - 1)
@@ -192,51 +199,53 @@ def main():
                 print("Execution of generated program failed without mutants.")
                 continue
 
-            # Compile and run the program with sanitizers - it should run without error. This is to guard against Csmith
-            # sometimes emitting programs that feature undefined behaviour.
-            asan_ubsan_compile_command = ["clang-15"] + compiler_args + ["-fsanitize=address,undefined",
-                                                                         "-fno-sanitize-recover=undefined",
-                                                                         "-o",
-                                                                         asan_ubsan_compiled_exe]
-            asan_ubsan_compilation_result: ProcessResult = run_process_with_timeout(
-                asan_ubsan_compile_command,
-                timeout_seconds=args.compile_timeout * 10)
-            if asan_ubsan_compilation_result is None:
-                print("Compilation of generated program with asan/ubsan timed out.")
-                continue
-            if asan_ubsan_compilation_result.returncode != 0:
-                print("Compilation of generated program with asan/ubsan failed.")
-                continue
-            asan_ubsan_execution_result: ProcessResult = run_process_with_timeout(
-                cmd=[str(asan_ubsan_compiled_exe)], timeout_seconds=args.run_timeout * 10)
-            if asan_ubsan_execution_result is None:
-                print("Execution of generated program with asan/ubsan timed out.")
-                continue
-            if asan_ubsan_execution_result.returncode != 0:
-                print("Asan/ubsan error detected in generated program.")
-                continue
+            # Compile and run the program with sanitizers - it should run without error. This guards against
+            # Csmith occasionally emitting programs that feature undefined behaviour. Only done when
+            # --use-sanitizers is passed, as it roughly triples the work done per generated program.
+            if args.use_sanitizers:
+                asan_ubsan_compile_command = ["clang-15"] + compiler_args + ["-fsanitize=address,undefined",
+                                                                             "-fno-sanitize-recover=undefined",
+                                                                             "-o",
+                                                                             asan_ubsan_compiled_exe]
+                asan_ubsan_compilation_result: ProcessResult = run_process_with_timeout(
+                    asan_ubsan_compile_command,
+                    timeout_seconds=args.compile_timeout * 10)
+                if asan_ubsan_compilation_result is None:
+                    print("Compilation of generated program with asan/ubsan timed out.")
+                    continue
+                if asan_ubsan_compilation_result.returncode != 0:
+                    print("Compilation of generated program with asan/ubsan failed.")
+                    continue
+                asan_ubsan_execution_result: ProcessResult = run_process_with_timeout(
+                    cmd=[str(asan_ubsan_compiled_exe)], timeout_seconds=args.run_timeout * 10)
+                if asan_ubsan_execution_result is None:
+                    print("Execution of generated program with asan/ubsan timed out.")
+                    continue
+                if asan_ubsan_execution_result.returncode != 0:
+                    print("Asan/ubsan error detected in generated program.")
+                    continue
 
-            msan_compile_command = ["clang-15"] + compiler_args + ["-fsanitize=memory",
-                                                                   "-o",
-                                                                   msan_compiled_exe]
-            msan_compilation_result: ProcessResult = run_process_with_timeout(
-                msan_compile_command,
-                timeout_seconds=args.compile_timeout * 10)
-            if msan_compilation_result is None:
-                print("Compilation of generated program with msan timed out.")
-                continue
-            if msan_compilation_result.returncode != 0:
-                print("Compilation of generated program with msan failed.")
-                continue
-            msan_execution_result: ProcessResult = run_process_with_timeout(
-                cmd=[str(msan_compiled_exe)], timeout_seconds=args.run_timeout * 10)
-            if msan_execution_result is None:
-                print("Execution of generated program with msan timed out.")
-                continue
-            if msan_execution_result.returncode != 0:
-                print("Msan error detected in generated program.")
-                continue
-            # End of use of sanitizers on the generated program - it's looking good!
+                msan_compile_command = ["clang-15"] + compiler_args + ["-fsanitize=memory",
+                                                                       "-o",
+                                                                       msan_compiled_exe]
+                msan_compilation_result: ProcessResult = run_process_with_timeout(
+                    msan_compile_command,
+                    timeout_seconds=args.compile_timeout * 10)
+                if msan_compilation_result is None:
+                    print("Compilation of generated program with msan timed out.")
+                    continue
+                if msan_compilation_result.returncode != 0:
+                    print("Compilation of generated program with msan failed.")
+                    continue
+                msan_execution_result: ProcessResult = run_process_with_timeout(
+                    cmd=[str(msan_compiled_exe)], timeout_seconds=args.run_timeout * 10)
+                if msan_execution_result is None:
+                    print("Execution of generated program with msan timed out.")
+                    continue
+                if msan_execution_result.returncode != 0:
+                    print("Msan error detected in generated program.")
+                    continue
+                # End of use of sanitizers on the generated program - it's looking good!
 
             # Compile the program with the mutant tracking compiler.
             tracking_environment = os.environ.copy()
@@ -264,8 +273,9 @@ def main():
             analysis_timestamp_start: datetime.datetime = datetime.datetime.now()
 
             # Load file contents into a list. We go from list to set to list to eliminate duplicates.
-            covered_by_this_test: List[int] = list(set([int(line.strip()) for line in
-                                                        open(dredd_covered_mutants_path, 'r').readlines()]))
+            with open(dredd_covered_mutants_path, 'r') as covered_mutants_file:
+                covered_by_this_test: List[int] = list(set([int(line.strip())
+                                                            for line in covered_mutants_file]))
             covered_by_this_test.sort()
             candidate_mutants_for_this_test: List[int] = ([m for m in covered_by_this_test if m not in killed_mutants])
             print("Number of mutants to try: " + str(len(candidate_mutants_for_this_test)))
