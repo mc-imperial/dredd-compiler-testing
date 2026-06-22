@@ -52,6 +52,13 @@ def main():
     parser.add_argument("yarpgen_root", help="Path to a checkout of YARPgen, assuming that it has been built under "
                                              "'build' beneath this directory.",
                         type=Path)
+    parser.add_argument("--yarpgen-version",
+                        default=2,
+                        choices=[1, 2],
+                        help="Version of YARPGen that 'yarpgen_root' points to: 2 (loops, the 'main' branch) or "
+                             "1 (scalar, the 'v1' branch). Default is 2. This only selects the correct command-line "
+                             "flags for invoking the generator; the rest of the pipeline is identical for both.",
+                        type=int)
     parser.add_argument("--generator_timeout",
                         default=20,
                         help="Time in seconds to allow for generation of a program.",
@@ -146,11 +153,19 @@ def main():
             # Generate a Yarpgen program
             os.mkdir(yarpgen_out_dir)
             yarpgen_seed = random.randint(0, 2 ** 32 - 1)
-            yarpgen_cmd = [str(args.yarpgen_root / "build" / "yarpgen"),
-                           "--std=c",
-                           "--seed=" + str(yarpgen_seed),
-                           "-o",
-                           str(yarpgen_out_dir)]
+            if args.yarpgen_version == 2:
+                yarpgen_cmd = [str(args.yarpgen_root / "build" / "yarpgen"),
+                               "--std=c",
+                               "--seed=" + str(yarpgen_seed),
+                               "-o",
+                               str(yarpgen_out_dir)]
+            else:
+                # YARPGen v1 does not recognise "--std=c" (it expects e.g. "c99")
+                # and uses "--out-dir" rather than "-o" for the output directory.
+                yarpgen_cmd = [str(args.yarpgen_root / "build" / "yarpgen"),
+                               "--std=c99",
+                               "--seed=" + str(yarpgen_seed),
+                               "--out-dir=" + str(yarpgen_out_dir)]
 
             yarpgen_result: ProcessResult = run_process_with_timeout(cmd=yarpgen_cmd,
                                                                      timeout_seconds=args.generator_timeout)
