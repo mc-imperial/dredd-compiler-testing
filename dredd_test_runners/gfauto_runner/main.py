@@ -49,6 +49,10 @@ def run_amber_test(amber_test_file: Path,
                    extra_env: Optional[dict] = None) -> Optional[ProcessResult]:
     env = os.environ.copy()
     env["VK_ICD_FILENAMES"] = str(icd_path)
+    # Disable Mesa's on-disk shader cache. This ensures that shader compilation genuinely
+    # occurs on every run, so that (a) the set of mutants reached by a test is deterministic,
+    # and (b) mutants in shader compiler code paths cannot be masked by a cache hit.
+    env["MESA_SHADER_CACHE_DISABLE"] = "true"
     if extra_env is not None:
         env.update(extra_env)
     cmd = [str(AMBER_BINARY), str(amber_test_file), "--disable-spirv-val", "-d"]
