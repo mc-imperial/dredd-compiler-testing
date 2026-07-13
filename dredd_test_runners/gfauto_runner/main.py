@@ -100,6 +100,12 @@ def main():
                         help="Time in seconds to allow for running the generated Amber test under the mutant "
                              "tracking version of Mesa (without any mutation enabled).",
                         type=int)
+    parser.add_argument("--exclusion_test",
+                        default=Path("/data/gfauto_fuzzing/draw_rect.amber"),
+                        help="An Amber test that is run under the mutant tracking version of Mesa at startup. Any "
+                             "mutant reached by this test is excluded from further consideration. This filters out "
+                             "the very large number of mutants that are covered by even a trivial test.",
+                        type=Path)
     parser.add_argument("--run_timeout_multiplier",
                         default=5,
                         help="When running the Amber test with a mutant enabled, the timeout is this multiple of the "
@@ -166,8 +172,34 @@ def main():
     gfauto_temp_dir: Path = unique_work_dir / "temp"
     mutant_tracking_file: Path = unique_work_dir / "__dredd_covered_mutants"
 
+    # Run the exclusion test under the mutant tracking version of Mesa. Any mutant reached by this
+    # test is deemed too easily covered to be worth considering, and is excluded from testing.
+    # The tracking file lives in this process's unique working directory, so there is no risk of
+    # clashing with other processes doing the same thing.
+    print(f"Running exclusion test {args.exclusion_test} to determine which mutants to ignore...")
+    exclusion_tracking_file: Path = unique_work_dir / "__dredd_covered_mutants_exclusion"
+    exclusion_run_result: Optional[ProcessResult] = run_amber_test(
+        amber_test_file=args.exclusion_test,
+        icd_path=MESA_MUTANT_TRACKING_ICD,
+        timeout_seconds=args.run_timeout,
+        extra_env={"DREDD_MUTANT_TRACKING_FILE": str(exclusion_tracking_file)})
+    if exclusion_run_result is None:
+        print("Mutant tracking run of the exclusion test timed out; giving up.")
+        exit(1)
+    if exclusion_run_result.returncode != 0:
+        print("Mutant tracking run of the exclusion test failed; giving up.")
+        print(f"stdout: {exclusion_run_result.stdout.decode('utf-8')}")
+        print(f"stderr: {exclusion_run_result.stderr.decode('utf-8')}")
+        exit(1)
+    if not exclusion_tracking_file.exists():
+        print("Mutant tracking run of the exclusion test did not produce a coverage file; giving up.")
+        exit(1)
+    with open(exclusion_tracking_file, 'r') as exclusion_file:
+        excluded_mutants: Set[int] = set([int(line.strip()) for line in exclusion_file])
+    print(f"{len(excluded_mutants)} mutants are reached by the exclusion test and will be ignored.")
+
     killed_mutants: Set[int] = set()
-    unkilled_mutants: Set[int] = set(range(0, mutation_tree.num_mutations))
+    unkilled_mutants: Set[int] = set(range(0, mutation_tree.num_mutations)) - excluded_mutants
 
     # Make a work directory in which information about the mutant killing process will be stored. If this already
     # exists that's OK - there may be other processes working on mutant killing, or we may be continuing a job that
@@ -271,10 +303,13 @@ def main():
         # to Amber running for a long time or hanging.
         timeout_for_mutant_runs: int = max(1, int(args.run_timeout_multiplier * run_time) + 1)
 
-        # Load file contents into a list. We go from list to set to list to eliminate duplicates.
+        # Load file contents into a set to eliminate duplicates, remove the mutants that are
+        # excluded from consideration, and turn the result into a sorted list.
         with open(mutant_tracking_file, 'r') as covered_mutants_file:
-            covered_by_this_test: List[int] = list(set([int(line.strip())
-                                                        for line in covered_mutants_file]))
+            covered_by_this_test_including_excluded: Set[int] = set([int(line.strip())
+                                                                     for line in covered_mutants_file])
+        num_excluded_for_this_test: int = len(covered_by_this_test_including_excluded & excluded_mutants)
+        covered_by_this_test: List[int] = list(covered_by_this_test_including_excluded - excluded_mutants)
         covered_by_this_test.sort()
         candidate_mutants_for_this_test: List[int] = ([m for m in covered_by_this_test if m not in killed_mutants])
         print("Number of mutants to try: " + str(len(candidate_mutants_for_this_test)))
@@ -351,6 +386,7 @@ def main():
         with open(test_output_directory / "kill_summary.json", "w") as outfile:
             json.dump({"terminated_early": terminated_early,
                        "covered_mutants_count": len(covered_by_this_test),
+                       "excluded_mutants_count": num_excluded_for_this_test,
                        "killed_mutants": killed_by_this_test,
                        "skipped_mutants_count": len(already_killed_by_other_tests),
                        "survived_mutants_count": len(covered_but_not_killed_by_this_test),
