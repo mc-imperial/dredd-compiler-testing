@@ -10,6 +10,7 @@ import datetime
 
 from dredd_test_runners.common.mutation_tree import MutationTree
 from dredd_test_runners.common.run_process_with_timeout import ProcessResult, run_process_with_timeout
+from dredd_test_runners.common.mutant_sampler import MutantSampler, RunAllMutants, HarmonicBackoffSampler
 
 from pathlib import Path
 from typing import List, Optional, Set
@@ -129,6 +130,10 @@ def main():
                         help="Cease testing if a kill has not occurred for this length of time. Default is 24 hours. "
                              "To test indefinitely, pass 0.",
                         type=int)
+    parser.add_argument("--harmonic_backoff_sampler",
+                        action="store_false",
+                        help="If set, mutants are sampled using harmonic backoff; otherwise, every relevant mutant is "
+                            "always sampled for a given test.")
     args = parser.parse_args()
 
     assert args.mutation_info_file != args.mutation_info_file_for_mutant_coverage_tracking
@@ -204,6 +209,7 @@ def main():
 
     killed_mutants: Set[int] = set()
     unkilled_mutants: Set[int] = set(range(0, mutation_tree.num_mutations)) - excluded_mutants
+    mutant_sampler: MutantSampler = HarmonicBackoffSampler() if args.harmonic_backoff_sampler else RunAllMutants()
 
     # Make a work directory in which information about the mutant killing process will be stored. If this already
     # exists that's OK - there may be other processes working on mutant killing, or we may be continuing a job that
@@ -244,7 +250,7 @@ def main():
             cmd=gfauto_fuzz_cmd,
             timeout_seconds=args.fuzz_timeout,
             env=gfauto_environment,
-            cwd=str(unique_work_dir))
+            cwd=Path(str(unique_work_dir)))
         if gfauto_fuzz_result is None:
             print(f"gfauto_fuzz timed out (seed {iteration_seed})")
             continue
@@ -323,6 +329,10 @@ def main():
         covered_but_not_killed_by_this_test: List[int] = []
 
         for mutant in candidate_mutants_for_this_test:
+
+            if not mutant_sampler.select(mutant):
+                print("Skipping mutant " + str(mutant) + " for this test")
+                continue
 
             if not still_testing(total_test_time=args.total_test_time,
                                  maximum_time_since_last_kill=args.maximum_time_since_last_kill,
