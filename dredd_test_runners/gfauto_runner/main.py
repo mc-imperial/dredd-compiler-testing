@@ -326,14 +326,10 @@ def main():
 
         already_killed_by_other_tests: List[int] = ([m for m in covered_by_this_test if m in killed_mutants])
         killed_by_this_test: List[int] = []
+        covered_but_not_sampled_for_test: List[int] = []
         covered_but_not_killed_by_this_test: List[int] = []
 
         for mutant in candidate_mutants_for_this_test:
-
-            if not mutant_sampler.select(mutant):
-                print("Skipping mutant " + str(mutant) + " for this test")
-                continue
-
             if not still_testing(total_test_time=args.total_test_time,
                                  maximum_time_since_last_kill=args.maximum_time_since_last_kill,
                                  start_time_for_overall_testing=start_time_for_overall_testing,
@@ -347,6 +343,12 @@ def main():
                 killed_mutants.add(mutant)
                 already_killed_by_other_tests.append(mutant)
                 continue
+
+            if not mutant_sampler.select(mutant):
+                print("Skipping mutant " + str(mutant) + " for this test")
+                covered_but_not_sampled_for_test.append(mutant)
+                continue
+
             print("Trying mutant " + str(mutant))
             mutant_result: KillStatus = run_amber_test_with_mutant(mutant=mutant,
                                                                    amber_test_file=amber_test_file,
@@ -380,6 +382,7 @@ def main():
             time_of_last_kill=time_of_last_kill)
 
         all_considered_mutants = killed_by_this_test \
+            + covered_but_not_sampled_for_test \
             + covered_but_not_killed_by_this_test \
             + already_killed_by_other_tests
         all_considered_mutants.sort()
@@ -391,6 +394,7 @@ def main():
             terminated_early: bool = False
 
         killed_by_this_test.sort()
+        covered_but_not_sampled_for_test.sort()
         covered_but_not_killed_by_this_test.sort()
         already_killed_by_other_tests.sort()
 
@@ -402,6 +406,7 @@ def main():
                        "covered_mutants_count": len(covered_by_this_test),
                        "excluded_mutants_count": num_excluded_for_this_test,
                        "killed_mutants": killed_by_this_test,
+                       "not_sampled_mutants_count": len(covered_but_not_sampled_for_test),
                        "skipped_mutants_count": len(already_killed_by_other_tests),
                        "survived_mutants_count": len(covered_but_not_killed_by_this_test),
                        "analysis_start_time": str(analysis_timestamp_start),
