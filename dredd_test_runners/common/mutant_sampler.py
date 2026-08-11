@@ -28,7 +28,9 @@ class HarmonicBackoffSampler(MutantSampler):
 
     def select(self, mutant: int) -> bool:
         runs = self._runs.get(mutant, 0)
-        if self._rng.random() * (1 + runs) >= 1.0:
+        random_value = self._rng.random()
+        threshold = 1 / (1 + runs)
+        if random_value >= threshold:
             return False
         self._runs[mutant] = runs + 1
         return True

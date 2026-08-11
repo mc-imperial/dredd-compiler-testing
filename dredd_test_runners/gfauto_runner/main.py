@@ -131,7 +131,7 @@ def main():
                              "To test indefinitely, pass 0.",
                         type=int)
     parser.add_argument("--harmonic_backoff_sampler",
-                        action="store_false",
+                        action="store_true",
                         help="If set, mutants are sampled using harmonic backoff; otherwise, every relevant mutant is "
                             "always sampled for a given test.")
     args = parser.parse_args()
