@@ -85,6 +85,13 @@ def main():
                              "ASan/UBSan and MSan, discarding the program if a sanitizer reports an error. "
                              "This guards against Csmith occasionally emitting programs with undefined "
                              "behaviour, at the cost of extra compile/run time per generated program.")
+    parser.add_argument("--exclusion_program",
+                        default=Path("/data/trivial.c"),
+                        help="A C program that is compiled using the mutant tracking compiler at startup. Any "
+                             "mutant reached during this compilation is excluded from further consideration. This "
+                             "filters out the very large number of mutants that are covered when compiling even a "
+                             "trivial program.",
+                        type=Path)
     parser.add_argument("--harmonic_backoff_sampler",
                         action="store_true",
                         help="If set, mutants are sampled using harmonic backoff; otherwise, every relevant mutant is "
@@ -120,8 +127,36 @@ def main():
         asan_ubsan_compiled_exe = Path(temp_dir_for_generated_code, '__asan_ubsan.exe')
         msan_compiled_exe = Path(temp_dir_for_generated_code, '__msan.exe')
 
+        # Compile the exclusion program using the mutant tracking compiler. Any mutant reached during this
+        # compilation is deemed too easily covered to be worth considering, and is excluded from testing.
+        print(f"Compiling exclusion program {args.exclusion_program} to determine which mutants to ignore...")
+        exclusion_tracking_file: Path = Path(temp_dir_for_generated_code, '__dredd_covered_mutants_exclusion')
+        exclusion_exe: Path = Path(temp_dir_for_generated_code, '__exclusion.exe')
+        exclusion_tracking_environment = os.environ.copy()
+        exclusion_tracking_environment["DREDD_MUTANT_TRACKING_FILE"] = str(exclusion_tracking_file)
+        exclusion_compile_result: ProcessResult = run_process_with_timeout(
+            cmd=[args.mutant_tracking_compiler_executable, "-O3", args.exclusion_program, "-o", exclusion_exe],
+            timeout_seconds=args.compile_timeout,
+            env=exclusion_tracking_environment)
+        if exclusion_compile_result is None:
+            print("Mutant tracking compilation of the exclusion program timed out; giving up.")
+            exit(1)
+        if exclusion_compile_result.returncode != 0:
+            print("Mutant tracking compilation of the exclusion program failed; giving up.")
+            print(f"stdout: {exclusion_compile_result.stdout.decode('utf-8')}")
+            print(f"stderr: {exclusion_compile_result.stderr.decode('utf-8')}")
+            exit(1)
+        if not exclusion_tracking_file.exists():
+            print("Mutant tracking compilation of the exclusion program did not produce a coverage file; "
+                  "giving up.")
+            exit(1)
+        with open(exclusion_tracking_file, 'r') as exclusion_file:
+            excluded_mutants: Set[int] = set([int(line.strip()) for line in exclusion_file])
+        print(f"{len(excluded_mutants)} mutants are reached when compiling the exclusion program and will be "
+              f"ignored.")
+
         killed_mutants: Set[int] = set()
-        unkilled_mutants: Set[int] = set(range(0, mutation_tree.num_mutations))
+        unkilled_mutants: Set[int] = set(range(0, mutation_tree.num_mutations)) - excluded_mutants
         mutant_sampler: MutantSampler = HarmonicBackoffSampler() if args.harmonic_backoff_sampler \
             else RunAllMutants()
 
@@ -279,10 +314,13 @@ def main():
             # Record time at which consideration of this test started
             analysis_timestamp_start: datetime.datetime = datetime.datetime.now()
 
-            # Load file contents into a list. We go from list to set to list to eliminate duplicates.
+            # Load file contents into a set to eliminate duplicates, remove the mutants that are
+            # excluded from consideration, and turn the result into a sorted list.
             with open(dredd_covered_mutants_path, 'r') as covered_mutants_file:
-                covered_by_this_test: List[int] = list(set([int(line.strip())
-                                                            for line in covered_mutants_file]))
+                covered_by_this_test_including_excluded: Set[int] = set([int(line.strip())
+                                                                         for line in covered_mutants_file])
+            num_excluded_for_this_test: int = len(covered_by_this_test_including_excluded & excluded_mutants)
+            covered_by_this_test: List[int] = list(covered_by_this_test_including_excluded - excluded_mutants)
             covered_by_this_test.sort()
             candidate_mutants_for_this_test: List[int] = ([m for m in covered_by_this_test if m not in killed_mutants])
             print("Number of mutants to try: " + str(len(candidate_mutants_for_this_test)))
@@ -373,6 +411,7 @@ def main():
             with open(test_output_directory / "kill_summary.json", "w") as outfile:
                 json.dump({"terminated_early": terminated_early,
                            "covered_mutants_count": len(covered_by_this_test),
+                           "excluded_mutants_count": num_excluded_for_this_test,
                            "killed_mutants": killed_by_this_test,
                            "not_sampled_mutants_count": len(covered_but_not_sampled_for_test),
                            "skipped_mutants_count": len(already_killed_by_other_tests),
